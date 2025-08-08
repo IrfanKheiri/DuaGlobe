@@ -3,44 +3,43 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>3D Globe Message Visualization — Improved (Aug 2025, mobile fixes)</title>
+  <title>3D Globe Message Visualization — Demo Fixes</title>
   <style>
-    /* --- Base & Layout --- */
     body { margin: 0; padding: 0; font-family: Arial, sans-serif; overflow: hidden; background: #000; }
     #globe-container { width: 100vw; height: 100vh; position: relative; }
     #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 18px; z-index: 50; }
 
-    /* --- Controls --- */
     #controls {
       position: absolute; top: 20px; left: 20px; width: 300px; z-index: 100;
       background: rgba(0,0,0,0.7); color: #fff; padding: 15px; border-radius: 8px; backdrop-filter: blur(5px);
+      pointer-events: none;
     }
+    #controls input, #controls button, #controls label { pointer-events: auto; }
+
     .control-group { margin-bottom: 10px; }
     label { display: block; margin-bottom: 5px; font-size: 14px; }
     input { width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: rgba(255,255,255,0.1); color: #fff; box-sizing: border-box; }
-    /* Make the message input ~35% smaller visually */
     #message { font-size: 0.65em; padding: 5px; }
     button { background: #4CAF50; color: #fff; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 10px; font-size: 14px; transition: background .3s; }
     button:hover { background: #45a049; }
     button:disabled { background: #666; cursor: not-allowed; }
-    .disabled { opacity: 0.6; pointer-events: none; }
+    .disabled { opacity: 0.6; }
 
-    /* --- Notifications --- */
     #notification {
       position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
       background: rgba(0,0,0,0.8); color: #fff; padding: 10px 20px; border-radius: 4px; display: none; z-index: 101; backdrop-filter: blur(5px);
+      max-width: 90vw; text-align: center; pointer-events: none;
     }
     .error { background: rgba(220,53,69,0.85) !important; }
     .success { background: rgba(40,167,69,0.85) !important; }
     .info { background: rgba(0,123,255,0.85) !important; }
 
-    /* --- Responsive (Mobile) --- */
     @media (max-width: 768px) {
-      /* Ultra-compact controls on mobile */
       #controls {
         position: fixed; top: auto; bottom: 6px; left: 6px; right: 6px; width: auto;
         padding: 8px 10px; border-radius: 10px;
       }
+    }
   </style>
 </head>
 <body>
@@ -50,55 +49,279 @@
     <div id="controls">
       <div class="control-group">
         <label for="sender-city">Sender City:</label>
-        <input type="text" id="sender-city" placeholder="Enter sender city" value="New York" />
+        <input type="text" id="sender-city" list="city-list" placeholder="Enter sender city" value="New York" />
       </div>
       <div class="control-group">
         <label for="receiver-city">Receiver City:</label>
-        <input type="text" id="receiver-city" placeholder="Enter receiver city" value="Tokyo" />
+        <input type="text" id="receiver-city" list="city-list" placeholder="Enter receiver city" value="Makkah" />
       </div>
       <div class="control-group">
         <label for="message">Message:</label>
-        <input type="text" id="message" placeholder="Enter your message" value="Hello from across the globe!" />
+        <input type="text" id="message" placeholder="Enter your message (not rendered in this demo)" value="Hello from across the globe!" />
       </div>
       <button id="send-message">Send Message</button>
+
+      <!-- Shared datalist for autocomplete -->
+      <datalist id="city-list"></datalist>
     </div>
 
     <div id="notification"></div>
   </div>
 
-  <!-- Three.js -->
+  <!-- Three.js (cdnjs only) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <!-- Primary OrbitControls include -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/examples/js/controls/OrbitControls.min.js"></script>
+
   <script>
-    // --- City DB ---
+    function showFatalError(message) {
+      const n = document.getElementById('notification');
+      if (!n) return;
+      n.textContent = message;
+      n.className = 'error';
+      n.style.display = 'block';
+    }
+
+    // Lightweight fallback controls if OrbitControls fails to load
+    function createBasicDragControls(camera, domElement) {
+      const scope = { enabled: true, target: new THREE.Vector3(0, 0, 0), update() {}, dispose() {} };
+      let isDown = false, sx = 0, sy = 0;
+      const rotSpeed = 0.005, zoomSpeed = 0.1;
+      const offset = new THREE.Vector3();
+      const sph = new THREE.Spherical();
+
+      const onPointerDown = (e) => { isDown = true; sx = e.clientX; sy = e.clientY; domElement.setPointerCapture && domElement.setPointerCapture(e.pointerId); };
+      const onPointerMove = (e) => {
+        if (!isDown || !scope.enabled) return;
+        const dx = e.clientX - sx; const dy = e.clientY - sy; sx = e.clientX; sy = e.clientY;
+        offset.copy(camera.position).sub(scope.target); sph.setFromVector3(offset);
+        sph.theta -= dx * rotSpeed; sph.phi -= dy * rotSpeed;
+        sph.phi = Math.max(0.01, Math.min(Math.PI - 0.01, sph.phi));
+        offset.setFromSpherical(sph); camera.position.copy(scope.target).add(offset); camera.lookAt(scope.target);
+      };
+      const onPointerUp = () => { isDown = false; };
+      const onWheel = (e) => {
+        if (!scope.enabled) return; e.preventDefault();
+        const k = e.deltaY > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed);
+        offset.copy(camera.position).sub(scope.target).multiplyScalar(k);
+        camera.position.copy(scope.target).add(offset); camera.lookAt(scope.target);
+      };
+
+      domElement.addEventListener('pointerdown', onPointerDown);
+      domElement.addEventListener('pointermove', onPointerMove);
+      domElement.addEventListener('pointerup', onPointerUp);
+      domElement.addEventListener('wheel', onWheel, { passive: false });
+
+      scope.dispose = () => {
+        domElement.removeEventListener('pointerdown', onPointerDown);
+        domElement.removeEventListener('pointermove', onPointerMove);
+        domElement.removeEventListener('pointerup', onPointerUp);
+        domElement.removeEventListener('wheel', onWheel);
+      };
+      return scope;
+    }
+
+    // Extended city database (100+ entries) + Makkah default
     const cityDatabase = {
+      // Americas
       "New York": { lat: 40.7128, lng: -74.0060 },
       "Los Angeles": { lat: 34.0522, lng: -118.2437 },
+      "Chicago": { lat: 41.8781, lng: -87.6298 },
+      "Houston": { lat: 29.7604, lng: -95.3698 },
+      "Phoenix": { lat: 33.4484, lng: -112.0740 },
+      "San Francisco": { lat: 37.7749, lng: -122.4194 },
+      "Seattle": { lat: 47.6062, lng: -122.3321 },
+      "Miami": { lat: 25.7617, lng: -80.1918 },
+      "Toronto": { lat: 43.6532, lng: -79.3832 },
+      "Montreal": { lat: 45.5019, lng: -73.5674 },
+      "Vancouver": { lat: 49.2827, lng: -123.1207 },
+      "Mexico City": { lat: 19.4326, lng: -99.1332 },
+      "Guadalajara": { lat: 20.6597, lng: -103.3496 },
+      "Monterrey": { lat: 25.6866, lng: -100.3161 },
+      "Bogotá": { lat: 4.7110, lng: -74.0721 },
+      "Medellín": { lat: 6.2442, lng: -75.5812 },
+      "Lima": { lat: -12.0464, lng: -77.0428 },
+      "Quito": { lat: -0.1807, lng: -78.4678 },
+      "Santiago": { lat: -33.4489, lng: -70.6693 },
+      "Buenos Aires": { lat: -34.6037, lng: -58.3816 },
+      "Córdoba": { lat: -31.4201, lng: -64.1888 },
+      "Montevideo": { lat: -34.9011, lng: -56.1645 },
+      "Rio de Janeiro": { lat: -22.9068, lng: -43.1729 },
+      "São Paulo": { lat: -23.5505, lng: -46.6333 },
+      "Brasília": { lat: -15.7939, lng: -47.8828 },
+      "Salvador": { lat: -12.9777, lng: -38.5016 },
+      "Recife": { lat: -8.0476, lng: -34.8770 },
+      "Belo Horizonte": { lat: -19.9167, lng: -43.9345 },
+      "Panama City": { lat: 8.9824, lng: -79.5199 },
+      "San José": { lat: 9.9281, lng: -84.0907 },
+      "Havana": { lat: 23.1136, lng: -82.3666 },
+      "Santo Domingo": { lat: 18.4861, lng: -69.9312 },
+      "Kingston": { lat: 17.9712, lng: -76.7920 },
+
+      // Europe
       "London": { lat: 51.5074, lng: -0.1278 },
-      "Tokyo": { lat: 35.6762, lng: 139.6503 },
-      "Sydney": { lat: -33.8688, lng: 151.2093 },
       "Paris": { lat: 48.8566, lng: 2.3522 },
-      "Beijing": { lat: 39.9042, lng: 116.4074 },
+      "Lyon": { lat: 45.7640, lng: 4.8357 },
+      "Marseille": { lat: 43.2965, lng: 5.3698 },
+      "Berlin": { lat: 52.5200, lng: 13.4050 },
+      "Hamburg": { lat: 53.5511, lng: 9.9937 },
+      "Munich": { lat: 48.1351, lng: 11.5820 },
+      "Frankfurt": { lat: 50.1109, lng: 8.6821 },
+      "Madrid": { lat: 40.4168, lng: -3.7038 },
+      "Barcelona": { lat: 41.3851, lng: 2.1734 },
+      "Valencia": { lat: 39.4699, lng: -0.3763 },
+      "Lisbon": { lat: 38.7223, lng: -9.1393 },
+      "Porto": { lat: 41.1579, lng: -8.6291 },
+      "Rome": { lat: 41.9028, lng: 12.4964 },
+      "Milan": { lat: 45.4642, lng: 9.1900 },
+      "Naples": { lat: 40.8518, lng: 14.2681 },
+      "Turin": { lat: 45.0703, lng: 7.6869 },
+      "Venice": { lat: 45.4408, lng: 12.3155 },
+      "Zurich": { lat: 47.3769, lng: 8.5417 },
+      "Geneva": { lat: 46.2044, lng: 6.1432 },
+      "Vienna": { lat: 48.2082, lng: 16.3738 },
+      "Prague": { lat: 50.0755, lng: 14.4378 },
+      "Budapest": { lat: 47.4979, lng: 19.0402 },
+      "Bucharest": { lat: 44.4268, lng: 26.1025 },
+      "Sofia": { lat: 42.6977, lng: 23.3219 },
+      "Athens": { lat: 37.9838, lng: 23.7275 },
+      "Istanbul": { lat: 41.0082, lng: 28.9784 },
+      "Ankara": { lat: 39.9334, lng: 32.8597 },
+      "Izmir": { lat: 38.4237, lng: 27.1428 },
       "Moscow": { lat: 55.7558, lng: 37.6173 },
+      "Saint Petersburg": { lat: 59.9311, lng: 30.3609 },
+      "Kyiv": { lat: 50.4501, lng: 30.5234 },
+      "Warsaw": { lat: 52.2297, lng: 21.0122 },
+
+      // Middle East & North Africa
+      "Makkah": { lat: 21.3891, lng: 39.8579 },
+      "Mecca": { lat: 21.3891, lng: 39.8579 },
+      "Jeddah": { lat: 21.4858, lng: 39.1925 },
+      "Medina": { lat: 24.5247, lng: 39.5692 },
+      "Riyadh": { lat: 24.7136, lng: 46.6753 },
+      "Dammam": { lat: 26.4207, lng: 50.0888 },
+      "Dubai": { lat: 25.2048, lng: 55.2708 },
+      "Abu Dhabi": { lat: 24.4539, lng: 54.3773 },
+      "Doha": { lat: 25.2854, lng: 51.5310 },
+      "Kuwait City": { lat: 29.3759, lng: 47.9774 },
+      "Muscat": { lat: 23.5880, lng: 58.3829 },
+      "Manama": { lat: 26.2235, lng: 50.5876 },
+      "Amman": { lat: 31.9539, lng: 35.9106 },
+      "Beirut": { lat: 33.8938, lng: 35.5018 },
+      "Jerusalem": { lat: 31.7683, lng: 35.2137 },
+      "Tel Aviv": { lat: 32.0853, lng: 34.7818 },
       "Cairo": { lat: 30.0444, lng: 31.2357 },
-      "Rio de Janeiro": { lat: -22.9068, lng: -43.1729 }
+      "Alexandria": { lat: 31.2001, lng: 29.9187 },
+      "Casablanca": { lat: 33.5731, lng: -7.5898 },
+      "Rabat": { lat: 34.0209, lng: -6.8416 },
+      "Algiers": { lat: 36.7538, lng: 3.0588 },
+      "Tunis": { lat: 36.8065, lng: 10.1815 },
+      "Tripoli": { lat: 32.8872, lng: 13.1913 },
+
+      // Africa (Sub-Saharan)
+      "Addis Ababa": { lat: 8.9806, lng: 38.7578 },
+      "Nairobi": { lat: -1.2921, lng: 36.8219 },
+      "Kampala": { lat: 0.3476, lng: 32.5825 },
+      "Dar es Salaam": { lat: -6.7924, lng: 39.2083 },
+      "Johannesburg": { lat: -26.2041, lng: 28.0473 },
+      "Cape Town": { lat: -33.9249, lng: 18.4241 },
+      "Lagos": { lat: 6.5244, lng: 3.3792 },
+      "Abuja": { lat: 9.0765, lng: 7.3986 },
+      "Accra": { lat: 5.6037, lng: -0.1870 },
+      "Abidjan": { lat: 5.3453, lng: -4.0244 },
+      "Dakar": { lat: 14.7167, lng: -17.4677 },
+      "Nouakchott": { lat: 18.0735, lng: -15.9582 },
+      "Khartoum": { lat: 15.5007, lng: 32.5599 },
+      "Harare": { lat: -17.8252, lng: 31.0335 },
+      "Luanda": { lat: -8.8390, lng: 13.2894 },
+      "Kinshasa": { lat: -4.4419, lng: 15.2663 },
+
+      // South Asia
+      "Karachi": { lat: 24.8607, lng: 67.0011 },
+      "Lahore": { lat: 31.5204, lng: 74.3587 },
+      "Islamabad": { lat: 33.6844, lng: 73.0479 },
+      "Delhi": { lat: 28.6139, lng: 77.2090 },
+      "Mumbai": { lat: 19.0760, lng: 72.8777 },
+      "Bengaluru": { lat: 12.9716, lng: 77.5946 },
+      "Chennai": { lat: 13.0827, lng: 80.2707 },
+      "Kolkata": { lat: 22.5726, lng: 88.3639 },
+      "Hyderabad": { lat: 17.3850, lng: 78.4867 },
+      "Dhaka": { lat: 23.8103, lng: 90.4125 },
+      "Kathmandu": { lat: 27.7172, lng: 85.3240 },
+      "Colombo": { lat: 6.9271, lng: 79.8612 },
+
+      // Southeast Asia
+      "Yangon": { lat: 16.8409, lng: 96.1735 },
+      "Bangkok": { lat: 13.7563, lng: 100.5018 },
+      "Hanoi": { lat: 21.0278, lng: 105.8342 },
+      "Ho Chi Minh City": { lat: 10.8231, lng: 106.6297 },
+      "Phnom Penh": { lat: 11.5564, lng: 104.9282 },
+      "Vientiane": { lat: 17.9757, lng: 102.6331 },
+      "Singapore": { lat: 1.3521, lng: 103.8198 },
+      "Kuala Lumpur": { lat: 3.1390, lng: 101.6869 },
+      "Jakarta": { lat: -6.2088, lng: 106.8456 },
+      "Surabaya": { lat: -7.2575, lng: 112.7521 },
+      "Manila": { lat: 14.5995, lng: 120.9842 },
+      "Cebu City": { lat: 10.3157, lng: 123.8854 },
+
+      // East Asia
+      "Tokyo": { lat: 35.6762, lng: 139.6503 },
+      "Osaka": { lat: 34.6937, lng: 135.5023 },
+      "Kyoto": { lat: 35.0116, lng: 135.7681 },
+      "Nagoya": { lat: 35.1815, lng: 136.9066 },
+      "Sapporo": { lat: 43.0618, lng: 141.3545 },
+      "Seoul": { lat: 37.5665, lng: 126.9780 },
+      "Busan": { lat: 35.1796, lng: 129.0756 },
+      "Pyongyang": { lat: 39.0392, lng: 125.7625 },
+      "Beijing": { lat: 39.9042, lng: 116.4074 },
+      "Shanghai": { lat: 31.2304, lng: 121.4737 },
+      "Guangzhou": { lat: 23.1291, lng: 113.2644 },
+      "Shenzhen": { lat: 22.5431, lng: 114.0579 },
+      "Chengdu": { lat: 30.5728, lng: 104.0668 },
+      "Chongqing": { lat: 29.4316, lng: 106.9123 },
+      "Wuhan": { lat: 30.5928, lng: 114.3055 },
+      "Xi'an": { lat: 34.3416, lng: 108.9398 },
+      "Hangzhou": { lat: 30.2741, lng: 120.1551 },
+      "Nanjing": { lat: 32.0603, lng: 118.7969 },
+      "Hong Kong": { lat: 22.3193, lng: 114.1694 },
+      "Taipei": { lat: 25.0330, lng: 121.5654 },
+      "Kaohsiung": { lat: 22.6273, lng: 120.3014 },
+      "Ulaanbaatar": { lat: 47.8864, lng: 106.9057 },
+
+      // Oceania
+      "Sydney": { lat: -33.8688, lng: 151.2093 },
+      "Melbourne": { lat: -37.8136, lng: 144.9631 },
+      "Brisbane": { lat: -27.4698, lng: 153.0251 },
+      "Perth": { lat: -31.9523, lng: 115.8613 },
+      "Adelaide": { lat: -34.9285, lng: 138.6007 },
+      "Auckland": { lat: -36.8485, lng: 174.7633 },
+      "Wellington": { lat: -41.2866, lng: 174.7756 }
     };
 
+    // Populate the <datalist> with city options (autocomplete)
+    function populateCityDatalist() {
+      const list = document.getElementById('city-list');
+      if (!list) return;
+      list.innerHTML = '';
+      const names = Object.keys(cityDatabase).sort((a, b) => a.localeCompare(b));
+      for (const name of names) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        list.appendChild(opt);
+      }
+    }
+
     const GlobeApp = {
-      // Core
       scene: null, camera: null, renderer: null, globe: null, controls: null, clock: null,
-      // State
-      currentAnimation: null, yOffset: 0, controlsActive: false, animationFrame: null,
-      // Constants
+      currentAnimation: null, yOffset: 0, animationFrame: null,
       BASE_CAMERA_DISTANCE: 3.8,
-      ANIMATION_PHASES: {
-        rotateToSender: { duration: 1.4 },
-        messageFlow: { duration: 4.0 },
-        rotateToReceiver: { duration: 1.2 },
-        endPause: { duration: 1.4 }
-      },
+      ANIMATION_PHASES: { rotateToSender: { duration: 1.4 }, messageFlow: { duration: 4.0 }, rotateToReceiver: { duration: 1.2 }, endPause: { duration: 1.4 } },
+      kaabah: null, kaabahNormal: null, kaabahBasePos: null, kaabahPhase: 0,
 
       init() {
+        const loading = document.getElementById('loading');
+        if (loading) loading.style.display = 'none';
+
         this.clock = new THREE.Clock();
         this.animate = this.animate.bind(this);
         this.onWindowResize = this.onWindowResize.bind(this);
@@ -108,588 +331,314 @@
         this.setupLights();
         this.createGlobe();
 
-        // Bind after scene/controls exist
         window.addEventListener('resize', this.onWindowResize);
 
-        // Initial layout pass
         this.onWindowResize();
         this.render();
-
-        // Hide loading now that initialization is complete
-        const loading = document.getElementById('loading');
-        if (loading) loading.style.display = 'none';
+        if (!this.animationFrame) this.animationFrame = requestAnimationFrame(this.animate);
       },
 
-      // --- Scene / Controls / Lights ---
       setupScene() {
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x000000);
 
         const container = document.getElementById('globe-container');
         this.camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
-        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        try {
+          this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        } catch (e) {
+          showFatalError('WebGL renderer could not be created.');
+          return;
+        }
         this.renderer.setSize(container.clientWidth, container.clientHeight);
-        // Texture strategy: cap DPR to mitigate overdraw on mobile HiDPI
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         container.appendChild(this.renderer.domElement);
       },
 
       setupControls() {
-        this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
-        this.controls.enableDamping = true;
-        this.controls.dampingFactor = 0.05;
-        this.controls.rotateSpeed = 0.5;
-        this.controls.enablePan = false;
+        const tryInitOrbit = () => {
+          try {
+            if (typeof THREE !== 'undefined' && typeof THREE.OrbitControls === 'function') {
+              this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+              this.controls.enableDamping = true;
+              this.controls.dampingFactor = 0.06;
+              this.controls.rotateSpeed = 0.5;
+              this.controls.enablePan = false;
+              this.controls.addEventListener('change', () => this.render());
+              console.log('OrbitControls initialized.');
+              return true;
+            }
+          } catch (e) {
+            console.warn('OrbitControls init error:', e);
+          }
+          return false;
+        };
 
-        // Conditional rendering: render only while interacting
-        this.controls.addEventListener('change', () => this.render());
-        this.controls.addEventListener('start', () => { this.controlsActive = true; if (!this.animationFrame) this.animate(); });
-        this.controls.addEventListener('end', () => { this.controlsActive = false; });
+        if (tryInitOrbit()) return;
+
+        // Fallback: try loading the non-minified OrbitControls
+        const alt = document.createElement('script');
+        alt.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/examples/js/controls/OrbitControls.js';
+        alt.onload = () => {
+          if (!tryInitOrbit()) {
+            this.useBasicControls();
+          }
+        };
+        alt.onerror = () => {
+          this.useBasicControls();
+        };
+        document.head.appendChild(alt);
+      },
+
+      useBasicControls() {
+        console.warn('OrbitControls not available — falling back to basic drag controls.');
+        this.controls = createBasicDragControls(this.camera, this.renderer.domElement);
+        this.showNotification('Using fallback drag controls (no pan inertia).', 'info');
       },
 
       setupLights() {
-        // Softer key light + more fill so the dark side isn't too dark
-        const ambient = new THREE.AmbientLight(0xffffff, 0.5); // brighter ambient fill
-        const hemi = new THREE.HemisphereLight(0xffffff, 0x404040, 0.35); // sky/ground fill
-        const dir = new THREE.DirectionalLight(0xffffff, 0.9); // slightly reduced from 1
+        const ambient = new THREE.AmbientLight(0xffffff, 0.65);
+        const hemi = new THREE.HemisphereLight(0xffffff, 0x404040, 0.4);
+        const dir = new THREE.DirectionalLight(0xffffff, 0.9);
         dir.position.set(5, 3, 5);
         this.scene.add(ambient, hemi, dir);
       },
 
-      // --- Texture helpers (flow & glow) ---
       createFlowTexture() {
-        const c = document.createElement('canvas');
-        c.width = 32; c.height = 256;
-        const g = c.getContext('2d');
+        const c = document.createElement('canvas'); c.width = 32; c.height = 256; const g = c.getContext('2d');
         const grad = g.createLinearGradient(0, 0, 0, c.height);
-        grad.addColorStop(0.0, 'rgba(255,255,255,0)');
-        grad.addColorStop(0.35, 'rgba(255,255,255,0)');
-        grad.addColorStop(0.50, 'rgba(255,255,255,0.9)');
-        grad.addColorStop(0.65, 'rgba(255,255,255,0)');
-        grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+        grad.addColorStop(0.0, 'rgba(255,255,255,0)'); grad.addColorStop(0.35, 'rgba(255,255,255,0)'); grad.addColorStop(0.50, 'rgba(255,255,255,0.9)'); grad.addColorStop(0.65, 'rgba(255,255,255,0)'); grad.addColorStop(1.0, 'rgba(255,255,255,0)');
         g.fillStyle = grad; g.fillRect(0, 0, c.width, c.height);
-        const tex = new THREE.CanvasTexture(c);
-        tex.wrapS = THREE.ClampToEdgeWrapping;
-        tex.wrapT = THREE.RepeatWrapping;
-        tex.needsUpdate = true;
-        return tex;
+        const tex = new THREE.CanvasTexture(c); tex.wrapS = THREE.ClampToEdgeWrapping; tex.wrapT = THREE.RepeatWrapping; tex.needsUpdate = true; return tex;
       },
 
       createRadialTexture({ size = 128, inner = 0.0, mid = 0.5, outer = 1.0, mode = 'glow' } = {}) {
-        const c = document.createElement('canvas');
-        c.width = c.height = size;
-        const g = c.getContext('2d');
-        const cx = size / 2, cy = size / 2, r = size / 2;
+        const c = document.createElement('canvas'); c.width = c.height = size; const g = c.getContext('2d'); const cx = size / 2, cy = size / 2, r = size / 2;
         const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
-        if (mode === 'glow') {
-          grad.addColorStop(inner, 'rgba(255,255,255,1)');
-          grad.addColorStop(mid, 'rgba(255,255,255,0.25)');
-          grad.addColorStop(outer, 'rgba(255,255,255,0)');
-        } else { // ring
-          grad.addColorStop(0.0, 'rgba(255,255,255,0)');
-          grad.addColorStop(0.65, 'rgba(255,255,255,0)');
-          grad.addColorStop(0.75, 'rgba(255,255,255,0.9)');
-          grad.addColorStop(0.95, 'rgba(255,255,255,0)');
-          grad.addColorStop(1.0, 'rgba(255,255,255,0)');
-        }
-        g.fillStyle = grad; g.fillRect(0, 0, size, size);
-        const tex = new THREE.CanvasTexture(c);
-        tex.needsUpdate = true;
-        return tex;
+        if (mode === 'glow') { grad.addColorStop(inner, 'rgba(255,255,255,1)'); grad.addColorStop(mid, 'rgba(255,255,255,0.25)'); grad.addColorStop(outer, 'rgba(255,255,255,0)'); }
+        else { grad.addColorStop(0.0, 'rgba(255,255,255,0)'); grad.addColorStop(0.65, 'rgba(255,255,255,0)'); grad.addColorStop(0.75, 'rgba(255,255,255,0.9)'); grad.addColorStop(0.95, 'rgba(255,255,255,0)'); grad.addColorStop(1.0, 'rgba(255,255,255,0)'); }
+        g.fillStyle = grad; g.fillRect(0, 0, size, size); const tex = new THREE.CanvasTexture(c); tex.needsUpdate = true; return tex;
       },
 
-      // --- Globe ---
       createGlobe() {
         const geometry = new THREE.SphereGeometry(1, 64, 64);
-        const textureLoader = new THREE.TextureLoader();
-        textureLoader.setCrossOrigin('anonymous');
+        const material = new THREE.MeshPhongMaterial({ color: new THREE.Color(0x9a9a9a), specular: new THREE.Color(0x222222), shininess: 12 });
+        this.globe = new THREE.Mesh(geometry, material);
+        this.scene.add(this.globe);
+        this.render();
 
+        const textureLoader = new THREE.TextureLoader(); textureLoader.setCrossOrigin('anonymous');
+        const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
+        const applyMap = (type, tex) => {
+          if (!tex || !this.globe || !this.globe.material) return;
+          tex.anisotropy = maxAniso; tex.needsUpdate = true;
+          if (type === 'color') this.globe.material.map = tex;
+          if (type === 'normal') { this.globe.material.normalMap = tex; this.globe.material.normalScale = new THREE.Vector2(0.5, 0.5); }
+          if (type === 'spec') this.globe.material.specularMap = tex;
+          this.globe.material.needsUpdate = true; this.render();
+        };
         const earthColorURL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_atmos_2048.jpg';
         const earthNormalURL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_normal_2048.jpg';
         const earthSpecURL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_specular_2048.jpg';
-
-        const makeMaterial = (colorMap, normalMap, specMap) => new THREE.MeshPhongMaterial({
-          map: colorMap || null,
-          normalMap: normalMap || null,
-          normalScale: new THREE.Vector2(0.5, 0.5),
-          specularMap: specMap || null,
-          // Tame specular highlights and glossy look
-          specular: new THREE.Color(0x111111),
-          shininess: 10
-        });
-
-        const onLoadAll = (maps) => {
-          const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
-          maps.forEach(m => { if (m) { m.anisotropy = maxAniso; m.needsUpdate = true; } });
-          const material = makeMaterial(...maps);
-          this.globe = new THREE.Mesh(geometry, material);
-          this.scene.add(this.globe);
-          this.render();
-        };
-
-        // Load maps with fallback strategy (never hang on missing assets)
-        Promise.all([
-          new Promise(res => textureLoader.load(earthColorURL, tex => res(tex), () => res(null))),
-          new Promise(res => textureLoader.load(earthNormalURL, tex => res(tex), () => res(null))),
-          new Promise(res => textureLoader.load(earthSpecURL, tex => res(tex), () => res(null)))
-        ]).then(onLoadAll).catch(() => {
-          const material = makeMaterial(null, null, null);
-          this.globe = new THREE.Mesh(geometry, material);
-          this.scene.add(this.globe);
-          this.render();
-        });
+        textureLoader.load(earthColorURL, (tex) => applyMap('color', tex));
+        textureLoader.load(earthNormalURL, (tex) => applyMap('normal', tex));
+        textureLoader.load(earthSpecURL, (tex) => applyMap('spec', tex));
       },
 
-      // --- Send Animation ---
+      // Kaabah helpers
+      createKaabah(normalDir) {
+        const group = new THREE.Group();
+        // Main cube (Kaabah)
+        const cubeMat = new THREE.MeshPhongMaterial({ color: 0x111111 });
+        const cube = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.06), cubeMat);
+        // Gold band (thin box slightly larger X/Z)
+        const bandMat = new THREE.MeshPhongMaterial({ color: 0xD4AF37, emissive: 0x6f5b1a, emissiveIntensity: 0.4, polygonOffset: true, polygonOffsetFactor: -1 });
+        const band = new THREE.Mesh(new THREE.BoxGeometry(0.0615, 0.012, 0.0615), bandMat);
+        band.position.y = 0.016; // near top
+        group.add(cube, band);
+
+        // Orient so local up aligns with surface normal
+        const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), normalDir.clone().normalize());
+        group.quaternion.copy(q);
+
+        // Position slightly above the globe
+        const basePos = normalDir.clone().normalize().multiplyScalar(1.06);
+        group.position.copy(basePos);
+
+        // Render on top of globe visuals
+        group.traverse(obj => { obj.renderOrder = 1100; if (obj.material) obj.material.depthTest = true; });
+
+        return { group, basePos };
+      },
+
+      showKaabahFor(normalDir) {
+        this.hideKaabah();
+        const { group, basePos } = this.createKaabah(normalDir);
+        this.kaabah = group; this.kaabahNormal = normalDir.clone().normalize(); this.kaabahBasePos = basePos; this.kaabahPhase = 0;
+        this.scene.add(group);
+        this.render();
+      },
+
+      hideKaabah() {
+        if (!this.kaabah) return;
+        const g = this.kaabah;
+        this.scene.remove(g);
+        g.traverse(child => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
+        this.kaabah = null; this.kaabahNormal = null; this.kaabahBasePos = null; this.kaabahPhase = 0;
+      },
+
+      updateKaabah(delta) {
+        if (!this.kaabah || !this.kaabahNormal || !this.kaabahBasePos) return;
+        this.kaabahPhase += delta;
+        const bob = 0.01 * Math.sin(this.kaabahPhase * 2.5);
+        const pos = this.kaabahBasePos.clone().add(this.kaabahNormal.clone().multiplyScalar(bob));
+        this.kaabah.position.copy(pos);
+        // subtle spin around normal
+        this.kaabah.rotateOnAxis(this.kaabahNormal, delta * 0.4);
+      },
+
+      syncKaabahForReceiverName(name) {
+        if (!name) { this.hideKaabah(); return; }
+        const n = name.trim().toLowerCase();
+        if (n === 'makkah' || n === 'mecca') {
+          const coords = this.lookupCity(name) || this.lookupCity('Makkah');
+          if (!coords) return;
+          const normal = this.latLngToVector3(coords.lat, coords.lng, 1.0).normalize();
+          this.showKaabahFor(normal);
+        } else {
+          this.hideKaabah();
+        }
+      },
+
       sendMessage(senderCityName, receiverCityName) {
-        if (this.currentAnimation) {
-          this.showNotification('Please wait — animation in progress.', 'info');
-          return;
-        }
-
-        const senderCoords = this.lookupCity(senderCityName);
-        const receiverCoords = this.lookupCity(receiverCityName);
-
+        if (this.currentAnimation) { this.showNotification('Please wait — animation in progress.', 'info'); return; }
+        const senderCoords = this.lookupCity(senderCityName); const receiverCoords = this.lookupCity(receiverCityName);
         if (!senderCoords || !receiverCoords || (senderCoords.lat === receiverCoords.lat && senderCoords.lng === receiverCoords.lng)) {
-          this.showNotification(!senderCoords ? `Sender city "${senderCityName}" not found` : !receiverCoords ? `Receiver city "${receiverCityName}" not found` : 'Cities cannot be the same', 'error');
-          return;
-        }
+          this.showNotification(!senderCoords ? `Sender city "${senderCityName}" not found` : !receiverCoords ? `Receiver city "${receiverCityName}" not found` : 'Cities cannot be the same', 'error'); return; }
 
-        // Disable inputs & button for duration
+        // Ensure Kaabah shows/hides based on current receiver
+        this.syncKaabahForReceiverName(receiverCityName);
+
         this.setInputsEnabled(false);
-
         const senderPos = this.latLngToVector3(senderCoords.lat, senderCoords.lng, 1.0);
         const receiverPos = this.latLngToVector3(receiverCoords.lat, receiverCoords.lng, 1.0);
-
-        // Create arc (with distance-based altitude & flow material)
         const { curve, arcGroup, flowMat } = this.createArc(senderPos, receiverPos);
+        const particle = this.createParticle(); particle.position.copy(senderPos); particle.visible = false;
+        const senderMarker = this.createCityMarker(senderPos, 0x00ff99); const receiverMarker = this.createCityMarker(receiverPos, 0xff7755);
 
-        // Particle (readable payload) + glow trail storage
-        const particle = this.createParticle();
-        particle.position.copy(senderPos);
-        particle.visible = false;
-
-        // Markers
-        const senderMarker = this.createCityMarker(senderPos, 0x00ff99);
-        const receiverMarker = this.createCityMarker(receiverPos, 0xff7755);
-
-        // Camera targets
         const lookAtTarget = new THREE.Vector3(0, this.yOffset, 0);
         const cameraDist = this.getResponsiveCameraDistance();
         const startCamDir = this.camera.position.clone().sub(lookAtTarget).normalize();
-        const senderCamDir = senderPos.clone().normalize();
-        const receiverCamDir = receiverPos.clone().normalize();
+        const senderCamDir = senderPos.clone().normalize(); const receiverCamDir = receiverPos.clone().normalize();
 
-        // Animation state
-        this.currentAnimation = {
-          phase: 'rotateToSender', phaseTime: 0, finished: false,
-          curve, arcGroup, flowMat,
-          senderMarker, receiverMarker,
-          particle, trail: [], trailTimer: 0,
-          lookAtTarget, cameraDist,
-          startCamDir, senderCamDir, receiverCamDir,
-          ripples: [], arrivalTriggered: false
-        };
+        this.currentAnimation = { phase: 'rotateToSender', phaseTime: 0, finished: false, curve, arcGroup, flowMat, senderMarker, receiverMarker, particle, trail: [], trailTimer: 0, lookAtTarget, cameraDist, startCamDir, senderCamDir, receiverCamDir, ripples: [], arrivalTriggered: false };
 
         this.scene.add(senderMarker, receiverMarker, arcGroup, particle);
-        this.controls.enabled = false;
+        if (this.controls) this.controls.enabled = false;
         this.showNotification(`Sending message from ${senderCityName}...`, 'success');
-
-        // Reset clock so the first animation frame doesn't jump due to a large idle delta
-        if (this.clock && this.clock.start) this.clock.start();
-        if (this.clock && this.clock.getDelta) this.clock.getDelta();
-
-        if (!this.animationFrame) this.animate();
+        if (this.clock && this.clock.start) this.clock.start(); if (this.clock && this.clock.getDelta) this.clock.getDelta();
       },
 
-      // --- Main Animate (conditional) ---
       animate() {
-        const anim = this.currentAnimation;
         const delta = this.clock.getDelta();
-
-        if (anim) {
-          this.handleAnimation(delta);
-        } else if (this.controlsActive) {
-          this.controls.update();
-        }
-
-        this.render();
-
-        if (this.currentAnimation || this.controlsActive) {
-          this.animationFrame = requestAnimationFrame(this.animate);
-        } else {
-          this.animationFrame = null;
-        }
+        if (this.currentAnimation) this.handleAnimation(delta);
+        if (this.controls && this.controls.update) this.controls.update();
+        this.updateKaabah(delta);
+        this.render(); this.animationFrame = requestAnimationFrame(this.animate);
       },
 
-      render() { this.renderer.render(this.scene, this.camera); },
+      render() { if (this.renderer && this.scene && this.camera) this.renderer.render(this.scene, this.camera); },
 
-      // --- Animation phases + helpers ---
       handleAnimation(delta) {
-        const anim = this.currentAnimation;
-        anim.phaseTime += delta;
-        const config = this.ANIMATION_PHASES[anim.phase];
-        const t = Math.min(anim.phaseTime / config.duration, 1);
-        const e = this.easeInOutQuad(t);
-
-        const camPosFromDir = (fromDir, toDir, tt) => {
-          const dir = this.slerpDirections(fromDir, toDir, tt);
-          return dir.multiplyScalar(anim.cameraDist).add(anim.lookAtTarget);
-        };
-
-        // Flow cue scroll
-        if (anim.phase === 'messageFlow' && anim.flowMat && anim.flowMat.map) {
-          anim.flowMat.map.offset.y = (anim.flowMat.map.offset.y - delta * 1.0) % 1;
-          anim.flowMat.needsUpdate = true;
-        }
-
-        // Update ripples every frame so the pulse starts immediately and stays smooth
+        const anim = this.currentAnimation; anim.phaseTime += delta; const config = this.ANIMATION_PHASES[anim.phase]; const t = Math.min(anim.phaseTime / config.duration, 1); const e = this.easeInOutQuad(t);
+        const camPosFromDir = (fromDir, toDir, tt) => { const dir = this.slerpDirections(fromDir, toDir, tt); return dir.multiplyScalar(anim.cameraDist).add(anim.lookAtTarget); };
+        if (anim.phase === 'messageFlow' && anim.flowMat && anim.flowMat.map) { anim.flowMat.map.offset.y = (anim.flowMat.map.offset.y - delta * 1.0) % 1; anim.flowMat.needsUpdate = true; }
         this.updateRipples(delta);
-
         switch (anim.phase) {
           case 'rotateToSender': {
-            const pos = camPosFromDir(anim.startCamDir, anim.senderCamDir, e);
-            this.camera.position.copy(pos);
-            this.camera.lookAt(anim.lookAtTarget);
-            if (t >= 1) {
-              anim.phase = 'messageFlow';
-              anim.phaseTime = 0;
-              anim.particle.visible = true;
-              this.showNotification('Message in transit...', 'info');
-            }
-            break;
-          }
+            const pos = camPosFromDir(anim.startCamDir, anim.senderCamDir, e); this.camera.position.copy(pos); this.camera.lookAt(anim.lookAtTarget);
+            if (t >= 1) { anim.phase = 'messageFlow'; anim.phaseTime = 0; anim.particle.visible = true; this.showNotification('Message in transit...', 'info'); }
+            break; }
           case 'messageFlow': {
-            const point = anim.curve.getPoint(e);
-            anim.particle.position.copy(point);
-
-            // Trail (readable payload)
-            anim.trailTimer += delta;
-            if (anim.trailTimer > 0.05) {
-              anim.trailTimer = 0;
-              const s = this.createGlowSprite();
-              s.position.copy(point);
-              s.scale.set(0.08, 0.08, 0.08);
-              s.material.opacity = 0.45;
-              s.userData.life = 0.35;
-              this.scene.add(s);
-              anim.trail.push(s);
-              if (anim.trail.length > 20) {
-                const old = anim.trail.shift();
-                this.scene.remove(old);
-                old.material.map.dispose();
-                old.material.dispose();
-              }
-            }
-            // Decay trail
-            for (let i = anim.trail.length - 1; i >= 0; i--) {
-              const s = anim.trail[i];
-              s.userData.life -= delta;
-              s.material.opacity = Math.max(0, s.userData.life * 1.2);
-              s.scale.multiplyScalar(1 + delta * 1.5);
-              if (s.userData.life <= 0) {
-                this.scene.remove(s);
-                s.material.map.dispose();
-                s.material.dispose();
-                anim.trail.splice(i, 1);
-              }
-            }
-
-            const particleDir = point.clone().normalize();
-            const camPos = camPosFromDir(anim.senderCamDir, particleDir, e);
-            this.camera.position.copy(camPos);
-            this.camera.lookAt(anim.lookAtTarget);
-
-            if (t >= 1) {
-              anim.phase = 'rotateToReceiver';
-              anim.phaseTime = 0;
-              // Arrival ritual: trigger at the start of rotateToReceiver
-              if (!anim.arrivalTriggered) {
-                this.arrivalPulse(anim.receiverMarker);
-                // Center the ripple using the receiver sphere's world position (device-safe)
-                { const wp = new THREE.Vector3(); anim.receiverMarker.children[1].getWorldPosition(wp); this.createRipple(wp.normalize()); }
-                anim.arrivalTriggered = true;
-              }
-            }
-            break;
-          }
+            const point = anim.curve.getPoint(e); anim.particle.position.copy(point);
+            anim.trailTimer += delta; if (anim.trailTimer > 0.05) { anim.trailTimer = 0; const s = this.createGlowSprite(); s.position.copy(point); s.scale.set(0.08, 0.08, 0.08); s.material.opacity = 0.45; s.userData.life = 0.35; this.scene.add(s); anim.trail.push(s); if (anim.trail.length > 20) { const old = anim.trail.shift(); this.scene.remove(old); old.material.map.dispose(); old.material.dispose(); } }
+            for (let i = anim.trail.length - 1; i >= 0; i--) { const s = anim.trail[i]; s.userData.life -= delta; s.material.opacity = Math.max(0, s.userData.life * 1.2); s.scale.multiplyScalar(1 + delta * 1.5); if (s.userData.life <= 0) { this.scene.remove(s); s.material.map.dispose(); s.material.dispose(); anim.trail.splice(i, 1); } }
+            const particleDir = point.clone().normalize(); const camPos = camPosFromDir(anim.senderCamDir, particleDir, e); this.camera.position.copy(camPos); this.camera.lookAt(anim.lookAtTarget);
+            if (t >= 1) { anim.phase = 'rotateToReceiver'; anim.phaseTime = 0; if (!anim.arrivalTriggered) { this.arrivalPulse(anim.receiverMarker); { const wp = new THREE.Vector3(); anim.receiverMarker.children[1].getWorldPosition(wp); this.createRipple(wp.normalize()); } anim.arrivalTriggered = true; } }
+            break; }
           case 'rotateToReceiver': {
-            const currentDir = anim.curve.getPoint(1).clone().normalize();
-            const pos = camPosFromDir(currentDir, anim.receiverCamDir, e);
-            this.camera.position.copy(pos);
-            this.camera.lookAt(anim.lookAtTarget);
-            if (t >= 1) {
-              anim.phase = 'endPause';
-              anim.phaseTime = 0;
-              this.showNotification('Message delivered!', 'success');
-            }
-            break;
-          }
-          case 'endPause': {
-            // Finish after pause; ripples are already updated every frame
-            if (t >= 1) {
-              anim.finished = true;
-              this.cleanupAnimation();
-            }
-            break;
-          }
+            const currentDir = anim.curve.getPoint(1).clone().normalize(); const pos = camPosFromDir(currentDir, anim.receiverCamDir, e); this.camera.position.copy(pos); this.camera.lookAt(anim.lookAtTarget);
+            if (t >= 1) { anim.phase = 'endPause'; anim.phaseTime = 0; this.showNotification('Message delivered!', 'success'); }
+            break; }
+          case 'endPause': { if (t >= 1) { anim.finished = true; this.cleanupAnimation(); } break; }
         }
       },
 
       cleanupAnimation() {
         const a = this.currentAnimation; if (!a) return;
-
-        const disposeObject = (obj) => {
-          if (!obj) return;
-          this.scene.remove(obj);
-          obj.traverse && obj.traverse(child => {
-            if (child.geometry) child.geometry.dispose();
-            if (child.material) {
-              if (child.material.map) child.material.map.dispose();
-              child.material.dispose();
-            }
-          });
-        };
-
-        disposeObject(a.arcGroup);
-        disposeObject(a.particle);
-        disposeObject(a.senderMarker);
-        disposeObject(a.receiverMarker);
+        const disposeObject = (obj) => { if (!obj) return; this.scene.remove(obj); obj.traverse && obj.traverse(child => { if (child.geometry) child.geometry.dispose(); if (child.material) { if (child.material.map) child.material.map.dispose(); child.material.dispose(); } }); };
+        disposeObject(a.arcGroup); disposeObject(a.particle); disposeObject(a.senderMarker); disposeObject(a.receiverMarker);
         a.trail.forEach(s => { this.scene.remove(s); if (s.material.map) s.material.map.dispose(); s.material.dispose(); });
         a.ripples.forEach(s => { this.scene.remove(s); if (s.material.map) s.material.map.dispose(); s.material.dispose(); });
-
-        this.currentAnimation = null;
-        this.controls.enabled = true;
-        this.setInputsEnabled(true);
+        this.currentAnimation = null; if (this.controls) this.controls.enabled = true; this.setInputsEnabled(true);
       },
 
-      // --- Helpers ---
       setInputsEnabled(enabled) {
-        const btn = document.getElementById('send-message');
-        const sender = document.getElementById('sender-city');
-        const receiver = document.getElementById('receiver-city');
-        const msg = document.getElementById('message');
+        const btn = document.getElementById('send-message'); const sender = document.getElementById('sender-city'); const receiver = document.getElementById('receiver-city'); const msg = document.getElementById('message');
         [btn, sender, receiver, msg].forEach(el => { el.disabled = !enabled; });
         document.getElementById('controls').classList.toggle('disabled', !enabled);
       },
 
-      getResponsiveCameraDistance() {
-        const aspect = window.innerWidth / window.innerHeight;
-        if (aspect < 1.2) return (this.BASE_CAMERA_DISTANCE / aspect) * 1.2;
-        return this.BASE_CAMERA_DISTANCE;
-      },
+      getResponsiveCameraDistance() { const aspect = window.innerWidth / window.innerHeight; if (aspect < 1.2) return (this.BASE_CAMERA_DISTANCE / aspect) * 1.2; return this.BASE_CAMERA_DISTANCE; },
 
-      latLngToVector3(lat, lng, r) {
-        const phi = (90 - lat) * (Math.PI / 180);
-        const theta = (lng + 180) * (Math.PI / 180);
-        return new THREE.Vector3(
-          -(r * Math.sin(phi) * Math.cos(theta)),
-          r * Math.cos(phi),
-          r * Math.sin(phi) * Math.sin(theta)
-        );
-      },
+      latLngToVector3(lat, lng, r) { const phi = (90 - lat) * (Math.PI / 180); const theta = (lng + 180) * (Math.PI / 180); return new THREE.Vector3( -(r * Math.sin(phi) * Math.cos(theta)), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(theta) ); },
 
-      lookupCity(name) {
-        const norm = name.trim();
-        if (cityDatabase[norm]) return cityDatabase[norm];
-        const lower = norm.toLowerCase();
-        for (const c in cityDatabase) if (c.toLowerCase() === lower) return cityDatabase[c];
-        return null;
-      },
+      lookupCity(name) { const norm = name.trim(); if (cityDatabase[norm]) return cityDatabase[norm]; const lower = norm.toLowerCase(); for (const c in cityDatabase) if (c.toLowerCase() === lower) return cityDatabase[c]; return null; },
 
-      createCityMarker(position, color) {
-        const group = new THREE.Group();
-        const mat = new THREE.MeshLambertMaterial({ color, depthTest: false });
-        const pin = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.05, 8), mat);
-        const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.015, 16, 16), mat);
-        pin.position.copy(position); pin.lookAt(position.clone().multiplyScalar(2)); pin.rotateX(Math.PI / 2);
-        sphere.position.copy(position);
-        group.add(pin, sphere); group.renderOrder = 1000; return group;
-      },
+      createCityMarker(position, color) { const group = new THREE.Group(); const mat = new THREE.MeshLambertMaterial({ color, depthTest: false }); const pin = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.05, 8), mat); const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.015, 16, 16), mat); pin.position.copy(position); pin.lookAt(position.clone().multiplyScalar(2)); pin.rotateX(Math.PI / 2); sphere.position.copy(position); group.add(pin, sphere); group.renderOrder = 1000; return group; },
 
-      // Altitude = f(distance) + Flow cue material
-      createArc(start, end) {
-        const s = start.clone().normalize();
-        const e = end.clone().normalize();
-        // Distance-aware altitude monotonic with angular separation
-        const v = s.clone().add(e); // proportional to cos(theta/2)
-        const cosHalf = Math.min(1, Math.max(0, v.length() * 0.5));
-        const arcHeight = THREE.MathUtils.clamp(0.18 + 1.25 * (1 - cosHalf), 0.22, 0.8);
-        const midDir = v.length() > 1e-6 ? v.clone().normalize() : s.clone();
-        const mid = midDir.multiplyScalar(1 + arcHeight);
-        const curve = new THREE.QuadraticBezierCurve3(start.clone(), mid, end.clone());
+      createArc(start, end) { const s = start.clone().normalize(); const e = end.clone().normalize(); const v = s.clone().add(e); const cosHalf = Math.min(1, Math.max(0, v.length() * 0.5)); const arcHeight = THREE.MathUtils.clamp(0.18 + 1.25 * (1 - cosHalf), 0.22, 0.8); const midDir = v.length() > 1e-6 ? v.clone().normalize() : s.clone(); const mid = midDir.multiplyScalar(1 + arcHeight); const curve = new THREE.QuadraticBezierCurve3(start.clone(), mid, end.clone()); const tubeGeom = new THREE.TubeGeometry(curve, 100, 0.005, 8, false); const baseMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthTest: false }); const baseTube = new THREE.Mesh(tubeGeom, baseMat); baseTube.renderOrder = 999; const flowTex = this.createFlowTexture(); const flowMat = new THREE.MeshBasicMaterial({ map: flowTex, transparent: true, opacity: 0.9, depthTest: false, blending: THREE.AdditiveBlending }); const flowTube = new THREE.Mesh(tubeGeom.clone(), flowMat); flowTube.renderOrder = 1000; flowTex.repeat.set(1, 6); flowTex.offset.set(0, 0); const group = new THREE.Group(); group.add(baseTube, flowTube); return { curve, arcGroup: group, flowMat }; },
 
-        const tubeGeom = new THREE.TubeGeometry(curve, 100, 0.005, 8, false);
-        const baseMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthTest: false });
-        const baseTube = new THREE.Mesh(tubeGeom, baseMat);
-        baseTube.renderOrder = 999;
+      createParticle() { const dot = new THREE.Mesh(new THREE.SphereGeometry(0.015, 16, 16), new THREE.MeshBasicMaterial({ color: 0xffd700, depthTest: false })); dot.renderOrder = 1001; const glow = this.createGlowSprite(); glow.scale.set(0.12, 0.12, 0.12); dot.add(glow); return dot; },
 
-        const flowTex = this.createFlowTexture();
-        const flowMat = new THREE.MeshBasicMaterial({ map: flowTex, transparent: true, opacity: 0.9, depthTest: false, blending: THREE.AdditiveBlending });
-        const flowTube = new THREE.Mesh(tubeGeom.clone(), flowMat);
-        flowTube.renderOrder = 1000;
-        flowTex.repeat.set(1, 6);
-        flowTex.offset.set(0, 0);
+      createGlowSprite() { const tex = this.createRadialTexture({ size: 128, mode: 'glow' }); const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, blending: THREE.AdditiveBlending, opacity: 0.6 }); const sprite = new THREE.Sprite(mat); sprite.renderOrder = 1002; return sprite; },
 
-        const group = new THREE.Group();
-        group.add(baseTube, flowTube);
-        return { curve, arcGroup: group, flowMat };
-      },
+      createRipple(normalDir) { const dir = normalDir.clone().normalize(); const pos = dir.multiplyScalar(1.01); const tex = this.createRadialTexture({ size: 256, mode: 'ring' }); const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, blending: THREE.AdditiveBlending, opacity: 0.9 }); const spr = new THREE.Sprite(mat); spr.position.copy(pos); spr.scale.set(0.2, 0.2, 0.2); spr.userData.life = 0.7; spr.renderOrder = 1003; this.scene.add(spr); if (this.currentAnimation) this.currentAnimation.ripples.push(spr); },
 
-      createParticle() {
-        const dot = new THREE.Mesh(
-          new THREE.SphereGeometry(0.015, 16, 16),
-          new THREE.MeshBasicMaterial({ color: 0xffd700, depthTest: false })
-        );
-        dot.renderOrder = 1001;
-        const glow = this.createGlowSprite();
-        glow.scale.set(0.12, 0.12, 0.12);
-        dot.add(glow);
-        return dot;
-      },
+      updateRipples(delta) { const anim = this.currentAnimation; if (!anim || !anim.ripples) return; for (let i = anim.ripples.length - 1; i >= 0; i--) { const r = anim.ripples[i]; r.userData.life -= delta; r.material.opacity = Math.max(0, r.userData.life); r.scale.multiplyScalar(1 + delta * 2.2); if (r.userData.life <= 0) { this.scene.remove(r); if (r.material && r.material.map) r.material.map.dispose(); if (r.material) r.material.dispose(); anim.ripples.splice(i, 1); } } },
 
-      createGlowSprite() {
-        const tex = this.createRadialTexture({ size: 128, mode: 'glow' });
-        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, blending: THREE.AdditiveBlending, opacity: 0.6 });
-        const sprite = new THREE.Sprite(mat);
-        sprite.renderOrder = 1002;
-        return sprite;
-      },
+      arrivalPulse(marker) { const sphere = marker.children[1]; const baseScale = sphere.scale.clone(); const dur = 0.25; const maxBoost = 0.6; const easeOutCubic = (x) => 1 - Math.pow(1 - x, 3); const easeInCubic = (x) => x * x * x; let start = null; const step = (ts) => { if (!this.currentAnimation) return; if (start === null) start = ts - 16; const n = Math.min((ts - start) / (dur * 1000), 1); let s; if (n < 0.5) { const m = n / 0.5; s = 1 + maxBoost * easeOutCubic(m); } else { const m = (n - 0.5) / 0.5; s = 1 + maxBoost * (1 - easeInCubic(m)); } sphere.scale.set(baseScale.x * s, baseScale.y * s, baseScale.z * s); this.render(); if (n < 1) requestAnimationFrame(step); else sphere.scale.copy(baseScale); }; requestAnimationFrame(step); },
 
-      createRipple(normalDir) {
-        // Place slightly above the surface along the provided world-space normal
-        const dir = normalDir.clone().normalize();
-        const pos = dir.multiplyScalar(1.01);
-        const tex = this.createRadialTexture({ size: 256, mode: 'ring' });
-        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, blending: THREE.AdditiveBlending, opacity: 0.9 });
-        const spr = new THREE.Sprite(mat);
-        spr.position.copy(pos);
-        spr.scale.set(0.2, 0.2, 0.2);
-        spr.userData.life = 0.7;
-        spr.renderOrder = 1003;
-        this.scene.add(spr);
-        if (this.currentAnimation) this.currentAnimation.ripples.push(spr);
-      },
+      slerpDirections(fromDir, toDir, t) { const vFrom = fromDir.clone().normalize(); const vTo = toDir.clone().normalize(); const q = new THREE.Quaternion().setFromUnitVectors(vFrom, vTo); const qi = new THREE.Quaternion(); qi.slerpQuaternions(new THREE.Quaternion(), q, t); return vFrom.applyQuaternion(qi).normalize(); },
 
-      updateRipples(delta) {
-        const anim = this.currentAnimation;
-        if (!anim || !anim.ripples) return;
-        for (let i = anim.ripples.length - 1; i >= 0; i--) {
-          const r = anim.ripples[i];
-          r.userData.life -= delta;
-          r.material.opacity = Math.max(0, r.userData.life);
-          r.scale.multiplyScalar(1 + delta * 2.2);
-          if (r.userData.life <= 0) {
-            this.scene.remove(r);
-            if (r.material && r.material.map) r.material.map.dispose();
-            if (r.material) r.material.dispose();
-            anim.ripples.splice(i, 1);
-          }
-        }
-      },
-
-      arrivalPulse(marker) {
-        const sphere = marker.children[1];
-        const baseScale = sphere.scale.clone();
-        const dur = 0.25; // seconds
-        const maxBoost = 0.6; // peak scale delta
-        const easeOutCubic = (x) => 1 - Math.pow(1 - x, 3);
-        const easeInCubic = (x) => x * x * x;
-
-        let start = null;
-        const step = (ts) => {
-          if (!this.currentAnimation) return; // if animation ended, stop
-          if (start === null) start = ts - 16; // backdate ~1 frame so expansion starts immediately
-          const n = Math.min((ts - start) / (dur * 1000), 1); // 0..1
-
-          // Two-phase pulse: fast grow (no initial pause), then quick settle
-          let s;
-          if (n < 0.5) {
-            const m = n / 0.5; // 0..1
-            s = 1 + maxBoost * easeOutCubic(m);
-          } else {
-            const m = (n - 0.5) / 0.5; // 0..1
-            s = 1 + maxBoost * (1 - easeInCubic(m));
-          }
-
-          sphere.scale.set(baseScale.x * s, baseScale.y * s, baseScale.z * s);
-          this.render();
-
-          if (n < 1) requestAnimationFrame(step); else sphere.scale.copy(baseScale);
-        };
-        requestAnimationFrame(step);
-      },
-
-      // Spherical interpolation between two unit direction vectors
-      slerpDirections(fromDir, toDir, t) {
-        const vFrom = fromDir.clone().normalize();
-        const vTo = toDir.clone().normalize();
-        const q = new THREE.Quaternion().setFromUnitVectors(vFrom, vTo);
-        const qi = new THREE.Quaternion();
-        qi.slerpQuaternions(new THREE.Quaternion(), q, t);
-        return vFrom.applyQuaternion(qi).normalize();
-      },
-
-      showNotification(message, type) {
-        const n = document.getElementById('notification');
-        n.textContent = message; n.className = type; n.style.display = 'block';
-        clearTimeout(n._timer);
-        n._timer = setTimeout(() => { n.style.display = 'none'; }, 2500);
-      },
+      showNotification(message, type) { const n = document.getElementById('notification'); n.textContent = message; n.className = type; n.style.display = 'block'; clearTimeout(n._timer); n._timer = setTimeout(() => { n.style.display = 'none'; }, 2500); },
 
       easeInOutQuad(t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; },
 
-      onWindowResize() {
-        const w = window.innerWidth, h = window.innerHeight;
-        const aspect = w / h;
-
-        // Measure controls height to know how much vertical space they occupy
-        const controlsEl = document.getElementById('controls');
-        const controlsH = controlsEl ? controlsEl.getBoundingClientRect().height : 0;
-        const controlsFrac = Math.min(0.6, controlsH / Math.max(1, h)); // cap at 60%
-
-        // In portrait, move the globe UP by looking slightly BELOW the equator (negative offset)
-        if (aspect < 1.0) {
-          // Stronger lift that scales with the UI footprint
-          this.yOffset = -(0.42 + controlsFrac * 1.1); // e.g., if controls ~30% -> ~-0.75
-        } else {
-          this.yOffset = 0;
-        }
-
-        if (this.renderer) this.renderer.setSize(w, h);
-        if (this.camera) this.camera.aspect = aspect;
-        const cameraDist = this.getResponsiveCameraDistance();
-        const lookAtTarget = new THREE.Vector3(0, this.yOffset, 0);
-
-        // If idle (no animation), immediately reposition
-        if (this.camera && !this.currentAnimation) {
-          this.camera.position.set(0, this.yOffset, cameraDist);
-          if (this.controls && this.controls.target) this.controls.target.copy(lookAtTarget);
-        }
-        if (this.camera) this.camera.updateProjectionMatrix();
-
-        if (this.controls && this.controls.target && this.camera) {
-          const dist = this.camera.position.distanceTo(this.controls.target);
-          this.controls.minDistance = dist * 0.8;
-          this.controls.maxDistance = dist * 1.5;
-        }
-
-        this.render();
-      }
+      onWindowResize() { const w = window.innerWidth, h = window.innerHeight; const aspect = w / h; const controlsEl = document.getElementById('controls'); const controlsH = controlsEl ? controlsEl.getBoundingClientRect().height : 0; const controlsFrac = Math.min(0.6, controlsH / Math.max(1, h)); if (aspect < 1.0) { this.yOffset = -(0.42 + controlsFrac * 1.1); } else { this.yOffset = 0; } if (this.renderer) this.renderer.setSize(w, h); if (this.camera) this.camera.aspect = aspect; const cameraDist = this.getResponsiveCameraDistance(); const lookAtTarget = new THREE.Vector3(0, this.yOffset, 0); if (this.camera && !this.currentAnimation) { this.camera.position.set(0, this.yOffset, cameraDist); if (this.controls && this.controls.target) this.controls.target.copy(lookAtTarget); } if (this.camera) this.camera.updateProjectionMatrix(); this.render(); }
     };
 
-    // --- Entry ---
     document.addEventListener('DOMContentLoaded', () => {
-      GlobeApp.init();
+      const loadingEl = document.getElementById('loading'); if (loadingEl) loadingEl.style.display = 'none';
+      populateCityDatalist();
+      window.addEventListener('error', () => { showFatalError('A script error occurred. Check console for details.'); });
+      try { GlobeApp.init(); console.log('OrbitControls present on load:', !!(window.THREE && THREE.OrbitControls)); } catch (e) { console.error(e); showFatalError('Initialization failed. See console for details.'); }
 
       const sendBtn = document.getElementById('send-message');
-      sendBtn.addEventListener('click', () => {
-        const sender = document.getElementById('sender-city').value;
-        const receiver = document.getElementById('receiver-city').value;
-        GlobeApp.sendMessage(sender, receiver);
+      sendBtn.addEventListener('click', () => { const sender = document.getElementById('sender-city').value; const receiver = document.getElementById('receiver-city').value; GlobeApp.sendMessage(sender, receiver); });
+
+      // Show/hide Kaabah live as user picks receiver city
+      const receiverInput = document.getElementById('receiver-city');
+      receiverInput.addEventListener('input', () => {
+        GlobeApp.syncKaabahForReceiverName(receiverInput.value);
       });
 
-      // Prevent Enter from triggering during animation
+      // Initialize Kaabah state for default value (Makkah)
+      GlobeApp.syncKaabahForReceiverName(receiverInput.value);
+
       ['sender-city', 'receiver-city', 'message'].forEach(id => {
         const el = document.getElementById(id);
         el.addEventListener('keydown', (e) => {
@@ -703,8 +652,6 @@
           }
         });
       });
-
-      
     });
   </script>
 </body>
