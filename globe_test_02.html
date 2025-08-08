@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Globe Message Visualization — Improved (Aug 2025, mobile fixes)</title>
+  <style>
+    /* --- Base & Layout --- */
+    body { margin: 0; padding: 0; font-family: Arial, sans-serif; overflow: hidden; background: #000; }
+    #globe-container { width: 100vw; height: 100vh; position: relative; }
+    #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 18px; z-index: 50; }
+
+    /* --- Controls --- */
+    #controls {
+      position: absolute; top: 20px; left: 20px; width: 300px; z-index: 100;
+      background: rgba(0,0,0,0.7); color: #fff; padding: 15px; border-radius: 8px; backdrop-filter: blur(5px);
+    }
+    .control-group { margin-bottom: 10px; }
+    label { display: block; margin-bottom: 5px; font-size: 14px; }
+    input { width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: rgba(255,255,255,0.1); color: #fff; box-sizing: border-box; }
+    /* Make the message input ~35% smaller visually */
+    #message { font-size: 0.65em; padding: 5px; }
+    button { background: #4CAF50; color: #fff; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 10px; font-size: 14px; transition: background .3s; }
+    button:hover { background: #45a049; }
+    button:disabled { background: #666; cursor: not-allowed; }
+    .disabled { opacity: 0.6; pointer-events: none; }
+
+    /* --- Notifications --- */
+    #notification {
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.8); color: #fff; padding: 10px 20px; border-radius: 4px; display: none; z-index: 101; backdrop-filter: blur(5px);
+    }
+    .error { background: rgba(220,53,69,0.85) !important; }
+    .success { background: rgba(40,167,69,0.85) !important; }
+    .info { background: rgba(0,123,255,0.85) !important; }
+
+    /* --- Responsive (Mobile) --- */
+    @media (max-width: 768px) {
+      /* Ultra-compact controls on mobile */
+      #controls {
+        position: fixed; top: auto; bottom: 6px; left: 6px; right: 6px; width: auto;
+        padding: 8px 10px; border-radius: 10px;
+      }
+  </style>
+</head>
+<body>
+  <div id="globe-container">
+    <div id="loading">Loading Globe...</div>
+
+    <div id="controls">
+      <div class="control-group">
+        <label for="sender-city">Sender City:</label>
+        <input type="text" id="sender-city" placeholder="Enter sender city" value="New York" />
+      </div>
+      <div class="control-group">
+        <label for="receiver-city">Receiver City:</label>
+        <input type="text" id="receiver-city" placeholder="Enter receiver city" value="Tokyo" />
+      </div>
+      <div class="control-group">
+        <label for="message">Message:</label>
+        <input type="text" id="message" placeholder="Enter your message" value="Hello from across the globe!" />
+      </div>
+      <button id="send-message">Send Message</button>
+    </div>
+
+    <div id="notification"></div>
+  </div>
+
+  <!-- Three.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script>
+    // --- City DB ---
+    const cityDatabase = {
+      "New York": { lat: 40.7128, lng: -74.0060 },
+      "Los Angeles": { lat: 34.0522, lng: -118.2437 },
+      "London": { lat: 51.5074, lng: -0.1278 },
+      "Tokyo": { lat: 35.6762, lng: 139.6503 },
+      "Sydney": { lat: -33.8688, lng: 151.2093 },
+      "Paris": { lat: 48.8566, lng: 2.3522 },
+      "Beijing": { lat: 39.9042, lng: 116.4074 },
+      "Moscow": { lat: 55.7558, lng: 37.6173 },
+      "Cairo": { lat: 30.0444, lng: 31.2357 },
+      "Rio de Janeiro": { lat: -22.9068, lng: -43.1729 }
+    };
+
+    const GlobeApp = {
+      // Core
+      scene: null, camera: null, renderer: null, globe: null, controls: null, clock: null,
+      // State
+      currentAnimation: null, yOffset: 0, controlsActive: false, animationFrame: null,
+      // Constants
+      BASE_CAMERA_DISTANCE: 3.8,
+      ANIMATION_PHASES: {
+        rotateToSender: { duration: 1.4 },
+        messageFlow: { duration: 4.0 },
+        rotateToReceiver: { duration: 1.2 },
+        endPause: { duration: 1.4 }
+      },
+
+      init() {
+        this.clock = new THREE.Clock();
+        this.animate = this.animate.bind(this);
+        this.onWindowResize = this.onWindowResize.bind(this);
+
+        this.setupScene();
+        this.setupControls();
+        this.setupLights();
+        this.createGlobe();
+
+        // Bind after scene/controls exist
+        window.addEventListener('resize', this.onWindowResize);
+
+        // Initial layout pass
+        this.onWindowResize();
+        this.render();
+
+        // Hide loading now that initialization is complete
+        const loading = document.getElementById('loading');
+        if (loading) loading.style.display = 'none';
+      },
+
+      // --- Scene / Controls / Lights ---
+      setupScene() {
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(0x000000);
+
+        const container = document.getElementById('globe-container');
+        this.camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer.setSize(container.clientWidth, container.clientHeight);
+        // Texture strategy: cap DPR to mitigate overdraw on mobile HiDPI
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        container.appendChild(this.renderer.domElement);
+      },
+
+      setupControls() {
+        this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+        this.controls.enableDamping = true;
+        this.controls.dampingFactor = 0.05;
+        this.controls.rotateSpeed = 0.5;
+        this.controls.enablePan = false;
+
+        // Conditional rendering: render only while interacting
+        this.controls.addEventListener('change', () => this.render());
+        this.controls.addEventListener('start', () => { this.controlsActive = true; if (!this.animationFrame) this.animate(); });
+        this.controls.addEventListener('end', () => { this.controlsActive = false; });
+      },
+
+      setupLights() {
+        // Softer key light + more fill so the dark side isn't too dark
+        const ambient = new THREE.AmbientLight(0xffffff, 0.5); // brighter ambient fill
+        const hemi = new THREE.HemisphereLight(0xffffff, 0x404040, 0.35); // sky/ground fill
+        const dir = new THREE.DirectionalLight(0xffffff, 0.9); // slightly reduced from 1
+        dir.position.set(5, 3, 5);
+        this.scene.add(ambient, hemi, dir);
+      },
+
+      // --- Texture helpers (flow & glow) ---
+      createFlowTexture() {
+        const c = document.createElement('canvas');
+        c.width = 32; c.height = 256;
+        const g = c.getContext('2d');
+        const grad = g.createLinearGradient(0, 0, 0, c.height);
+        grad.addColorStop(0.0, 'rgba(255,255,255,0)');
+        grad.addColorStop(0.35, 'rgba(255,255,255,0)');
+        grad.addColorStop(0.50, 'rgba(255,255,255,0.9)');
+        grad.addColorStop(0.65, 'rgba(255,255,255,0)');
+        grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+        g.fillStyle = grad; g.fillRect(0, 0, c.width, c.height);
+        const tex = new THREE.CanvasTexture(c);
+        tex.wrapS = THREE.ClampToEdgeWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        tex.needsUpdate = true;
+        return tex;
+      },
+
+      createRadialTexture({ size = 128, inner = 0.0, mid = 0.5, outer = 1.0, mode = 'glow' } = {}) {
+        const c = document.createElement('canvas');
+        c.width = c.height = size;
+        const g = c.getContext('2d');
+        const cx = size / 2, cy = size / 2, r = size / 2;
+        const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+        if (mode === 'glow') {
+          grad.addColorStop(inner, 'rgba(255,255,255,1)');
+          grad.addColorStop(mid, 'rgba(255,255,255,0.25)');
+          grad.addColorStop(outer, 'rgba(255,255,255,0)');
+        } else { // ring
+          grad.addColorStop(0.0, 'rgba(255,255,255,0)');
+          grad.addColorStop(0.65, 'rgba(255,255,255,0)');
+          grad.addColorStop(0.75, 'rgba(255,255,255,0.9)');
+          grad.addColorStop(0.95, 'rgba(255,255,255,0)');
+          grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+        }
+        g.fillStyle = grad; g.fillRect(0, 0, size, size);
+        const tex = new THREE.CanvasTexture(c);
+        tex.needsUpdate = true;
+        return tex;
+      },
+
+      // --- Globe ---
+      createGlobe() {
+        const geometry = new THREE.SphereGeometry(1, 64, 64);
+        const textureLoader = new THREE.TextureLoader();
+        textureLoader.setCrossOrigin('anonymous');
+
+        const earthColorURL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_atmos_2048.jpg';
+        const earthNormalURL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_normal_2048.jpg';
+        const earthSpecURL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_specular_2048.jpg';
+
+        const makeMaterial = (colorMap, normalMap, specMap) => new THREE.MeshPhongMaterial({
+          map: colorMap || null,
+          normalMap: normalMap || null,
+          normalScale: new THREE.Vector2(0.5, 0.5),
+          specularMap: specMap || null,
+          // Tame specular highlights and glossy look
+          specular: new THREE.Color(0x111111),
+          shininess: 10
+        });
+
+        const onLoadAll = (maps) => {
+          const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
+          maps.forEach(m => { if (m) { m.anisotropy = maxAniso; m.needsUpdate = true; } });
+          const material = makeMaterial(...maps);
+          this.globe = new THREE.Mesh(geometry, material);
+          this.scene.add(this.globe);
+          this.render();
+        };
+
+        // Load maps with fallback strategy (never hang on missing assets)
+        Promise.all([
+          new Promise(res => textureLoader.load(earthColorURL, tex => res(tex), () => res(null))),
+          new Promise(res => textureLoader.load(earthNormalURL, tex => res(tex), () => res(null))),
+          new Promise(res => textureLoader.load(earthSpecURL, tex => res(tex), () => res(null)))
+        ]).then(onLoadAll).catch(() => {
+          const material = makeMaterial(null, null, null);
+          this.globe = new THREE.Mesh(geometry, material);
+          this.scene.add(this.globe);
+          this.render();
+        });
+      },
+
+      // --- Send Animation ---
+      sendMessage(senderCityName, receiverCityName) {
+        if (this.currentAnimation) {
+          this.showNotification('Please wait — animation in progress.', 'info');
+          return;
+        }
+
+        const senderCoords = this.lookupCity(senderCityName);
+        const receiverCoords = this.lookupCity(receiverCityName);
+
+        if (!senderCoords || !receiverCoords || (senderCoords.lat === receiverCoords.lat && senderCoords.lng === receiverCoords.lng)) {
+          this.showNotification(!senderCoords ? `Sender city "${senderCityName}" not found` : !receiverCoords ? `Receiver city "${receiverCityName}" not found` : 'Cities cannot be the same', 'error');
+          return;
+        }
+
+        // Disable inputs & button for duration
+        this.setInputsEnabled(false);
+
+        const senderPos = this.latLngToVector3(senderCoords.lat, senderCoords.lng, 1.0);
+        const receiverPos = this.latLngToVector3(receiverCoords.lat, receiverCoords.lng, 1.0);
+
+        // Create arc (with distance-based altitude & flow material)
+        const { curve, arcGroup, flowMat } = this.createArc(senderPos, receiverPos);
+
+        // Particle (readable payload) + glow trail storage
+        const particle = this.createParticle();
+        particle.position.copy(senderPos);
+        particle.visible = false;
+
+        // Markers
+        const senderMarker = this.createCityMarker(senderPos, 0x00ff99);
+        const receiverMarker = this.createCityMarker(receiverPos, 0xff7755);
+
+        // Camera targets
+        const lookAtTarget = new THREE.Vector3(0, this.yOffset, 0);
+        const cameraDist = this.getResponsiveCameraDistance();
+        const startCamDir = this.camera.position.clone().sub(lookAtTarget).normalize();
+        const senderCamDir = senderPos.clone().normalize();
+        const receiverCamDir = receiverPos.clone().normalize();
+
+        // Animation state
+        this.currentAnimation = {
+          phase: 'rotateToSender', phaseTime: 0, finished: false,
+          curve, arcGroup, flowMat,
+          senderMarker, receiverMarker,
+          particle, trail: [], trailTimer: 0,
+          lookAtTarget, cameraDist,
+          startCamDir, senderCamDir, receiverCamDir,
+          ripples: [], arrivalTriggered: false
+        };
+
+        this.scene.add(senderMarker, receiverMarker, arcGroup, particle);
+        this.controls.enabled = false;
+        this.showNotification(`Sending message from ${senderCityName}...`, 'success');
+
+        // Reset clock so the first animation frame doesn't jump due to a large idle delta
+        if (this.clock && this.clock.start) this.clock.start();
+        if (this.clock && this.clock.getDelta) this.clock.getDelta();
+
+        if (!this.animationFrame) this.animate();
+      },
+
+      // --- Main Animate (conditional) ---
+      animate() {
+        const anim = this.currentAnimation;
+        const delta = this.clock.getDelta();
+
+        if (anim) {
+          this.handleAnimation(delta);
+        } else if (this.controlsActive) {
+          this.controls.update();
+        }
+
+        this.render();
+
+        if (this.currentAnimation || this.controlsActive) {
+          this.animationFrame = requestAnimationFrame(this.animate);
+        } else {
+          this.animationFrame = null;
+        }
+      },
+
+      render() { this.renderer.render(this.scene, this.camera); },
+
+      // --- Animation phases + helpers ---
+      handleAnimation(delta) {
+        const anim = this.currentAnimation;
+        anim.phaseTime += delta;
+        const config = this.ANIMATION_PHASES[anim.phase];
+        const t = Math.min(anim.phaseTime / config.duration, 1);
+        const e = this.easeInOutQuad(t);
+
+        const camPosFromDir = (fromDir, toDir, tt) => {
+          const dir = this.slerpDirections(fromDir, toDir, tt);
+          return dir.multiplyScalar(anim.cameraDist).add(anim.lookAtTarget);
+        };
+
+        // Flow cue scroll
+        if (anim.phase === 'messageFlow' && anim.flowMat && anim.flowMat.map) {
+          anim.flowMat.map.offset.y = (anim.flowMat.map.offset.y - delta * 1.0) % 1;
+          anim.flowMat.needsUpdate = true;
+        }
+
+        // Update ripples every frame so the pulse starts immediately and stays smooth
+        this.updateRipples(delta);
+
+        switch (anim.phase) {
+          case 'rotateToSender': {
+            const pos = camPosFromDir(anim.startCamDir, anim.senderCamDir, e);
+            this.camera.position.copy(pos);
+            this.camera.lookAt(anim.lookAtTarget);
+            if (t >= 1) {
+              anim.phase = 'messageFlow';
+              anim.phaseTime = 0;
+              anim.particle.visible = true;
+              this.showNotification('Message in transit...', 'info');
+            }
+            break;
+          }
+          case 'messageFlow': {
+            const point = anim.curve.getPoint(e);
+            anim.particle.position.copy(point);
+
+            // Trail (readable payload)
+            anim.trailTimer += delta;
+            if (anim.trailTimer > 0.05) {
+              anim.trailTimer = 0;
+              const s = this.createGlowSprite();
+              s.position.copy(point);
+              s.scale.set(0.08, 0.08, 0.08);
+              s.material.opacity = 0.45;
+              s.userData.life = 0.35;
+              this.scene.add(s);
+              anim.trail.push(s);
+              if (anim.trail.length > 20) {
+                const old = anim.trail.shift();
+                this.scene.remove(old);
+                old.material.map.dispose();
+                old.material.dispose();
+              }
+            }
+            // Decay trail
+            for (let i = anim.trail.length - 1; i >= 0; i--) {
+              const s = anim.trail[i];
+              s.userData.life -= delta;
+              s.material.opacity = Math.max(0, s.userData.life * 1.2);
+              s.scale.multiplyScalar(1 + delta * 1.5);
+              if (s.userData.life <= 0) {
+                this.scene.remove(s);
+                s.material.map.dispose();
+                s.material.dispose();
+                anim.trail.splice(i, 1);
+              }
+            }
+
+            const particleDir = point.clone().normalize();
+            const camPos = camPosFromDir(anim.senderCamDir, particleDir, e);
+            this.camera.position.copy(camPos);
+            this.camera.lookAt(anim.lookAtTarget);
+
+            if (t >= 1) {
+              anim.phase = 'rotateToReceiver';
+              anim.phaseTime = 0;
+              // Arrival ritual: trigger at the start of rotateToReceiver
+              if (!anim.arrivalTriggered) {
+                this.arrivalPulse(anim.receiverMarker);
+                // Center the ripple using the receiver sphere's world position (device-safe)
+                { const wp = new THREE.Vector3(); anim.receiverMarker.children[1].getWorldPosition(wp); this.createRipple(wp.normalize()); }
+                anim.arrivalTriggered = true;
+              }
+            }
+            break;
+          }
+          case 'rotateToReceiver': {
+            const currentDir = anim.curve.getPoint(1).clone().normalize();
+            const pos = camPosFromDir(currentDir, anim.receiverCamDir, e);
+            this.camera.position.copy(pos);
+            this.camera.lookAt(anim.lookAtTarget);
+            if (t >= 1) {
+              anim.phase = 'endPause';
+              anim.phaseTime = 0;
+              this.showNotification('Message delivered!', 'success');
+            }
+            break;
+          }
+          case 'endPause': {
+            // Finish after pause; ripples are already updated every frame
+            if (t >= 1) {
+              anim.finished = true;
+              this.cleanupAnimation();
+            }
+            break;
+          }
+        }
+      },
+
+      cleanupAnimation() {
+        const a = this.currentAnimation; if (!a) return;
+
+        const disposeObject = (obj) => {
+          if (!obj) return;
+          this.scene.remove(obj);
+          obj.traverse && obj.traverse(child => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) {
+              if (child.material.map) child.material.map.dispose();
+              child.material.dispose();
+            }
+          });
+        };
+
+        disposeObject(a.arcGroup);
+        disposeObject(a.particle);
+        disposeObject(a.senderMarker);
+        disposeObject(a.receiverMarker);
+        a.trail.forEach(s => { this.scene.remove(s); if (s.material.map) s.material.map.dispose(); s.material.dispose(); });
+        a.ripples.forEach(s => { this.scene.remove(s); if (s.material.map) s.material.map.dispose(); s.material.dispose(); });
+
+        this.currentAnimation = null;
+        this.controls.enabled = true;
+        this.setInputsEnabled(true);
+      },
+
+      // --- Helpers ---
+      setInputsEnabled(enabled) {
+        const btn = document.getElementById('send-message');
+        const sender = document.getElementById('sender-city');
+        const receiver = document.getElementById('receiver-city');
+        const msg = document.getElementById('message');
+        [btn, sender, receiver, msg].forEach(el => { el.disabled = !enabled; });
+        document.getElementById('controls').classList.toggle('disabled', !enabled);
+      },
+
+      getResponsiveCameraDistance() {
+        const aspect = window.innerWidth / window.innerHeight;
+        if (aspect < 1.2) return (this.BASE_CAMERA_DISTANCE / aspect) * 1.2;
+        return this.BASE_CAMERA_DISTANCE;
+      },
+
+      latLngToVector3(lat, lng, r) {
+        const phi = (90 - lat) * (Math.PI / 180);
+        const theta = (lng + 180) * (Math.PI / 180);
+        return new THREE.Vector3(
+          -(r * Math.sin(phi) * Math.cos(theta)),
+          r * Math.cos(phi),
+          r * Math.sin(phi) * Math.sin(theta)
+        );
+      },
+
+      lookupCity(name) {
+        const norm = name.trim();
+        if (cityDatabase[norm]) return cityDatabase[norm];
+        const lower = norm.toLowerCase();
+        for (const c in cityDatabase) if (c.toLowerCase() === lower) return cityDatabase[c];
+        return null;
+      },
+
+      createCityMarker(position, color) {
+        const group = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ color, depthTest: false });
+        const pin = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.05, 8), mat);
+        const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.015, 16, 16), mat);
+        pin.position.copy(position); pin.lookAt(position.clone().multiplyScalar(2)); pin.rotateX(Math.PI / 2);
+        sphere.position.copy(position);
+        group.add(pin, sphere); group.renderOrder = 1000; return group;
+      },
+
+      // Altitude = f(distance) + Flow cue material
+      createArc(start, end) {
+        const s = start.clone().normalize();
+        const e = end.clone().normalize();
+        // Distance-aware altitude monotonic with angular separation
+        const v = s.clone().add(e); // proportional to cos(theta/2)
+        const cosHalf = Math.min(1, Math.max(0, v.length() * 0.5));
+        const arcHeight = THREE.MathUtils.clamp(0.18 + 1.25 * (1 - cosHalf), 0.22, 0.8);
+        const midDir = v.length() > 1e-6 ? v.clone().normalize() : s.clone();
+        const mid = midDir.multiplyScalar(1 + arcHeight);
+        const curve = new THREE.QuadraticBezierCurve3(start.clone(), mid, end.clone());
+
+        const tubeGeom = new THREE.TubeGeometry(curve, 100, 0.005, 8, false);
+        const baseMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthTest: false });
+        const baseTube = new THREE.Mesh(tubeGeom, baseMat);
+        baseTube.renderOrder = 999;
+
+        const flowTex = this.createFlowTexture();
+        const flowMat = new THREE.MeshBasicMaterial({ map: flowTex, transparent: true, opacity: 0.9, depthTest: false, blending: THREE.AdditiveBlending });
+        const flowTube = new THREE.Mesh(tubeGeom.clone(), flowMat);
+        flowTube.renderOrder = 1000;
+        flowTex.repeat.set(1, 6);
+        flowTex.offset.set(0, 0);
+
+        const group = new THREE.Group();
+        group.add(baseTube, flowTube);
+        return { curve, arcGroup: group, flowMat };
+      },
+
+      createParticle() {
+        const dot = new THREE.Mesh(
+          new THREE.SphereGeometry(0.015, 16, 16),
+          new THREE.MeshBasicMaterial({ color: 0xffd700, depthTest: false })
+        );
+        dot.renderOrder = 1001;
+        const glow = this.createGlowSprite();
+        glow.scale.set(0.12, 0.12, 0.12);
+        dot.add(glow);
+        return dot;
+      },
+
+      createGlowSprite() {
+        const tex = this.createRadialTexture({ size: 128, mode: 'glow' });
+        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, blending: THREE.AdditiveBlending, opacity: 0.6 });
+        const sprite = new THREE.Sprite(mat);
+        sprite.renderOrder = 1002;
+        return sprite;
+      },
+
+      createRipple(normalDir) {
+        // Place slightly above the surface along the provided world-space normal
+        const dir = normalDir.clone().normalize();
+        const pos = dir.multiplyScalar(1.01);
+        const tex = this.createRadialTexture({ size: 256, mode: 'ring' });
+        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, blending: THREE.AdditiveBlending, opacity: 0.9 });
+        const spr = new THREE.Sprite(mat);
+        spr.position.copy(pos);
+        spr.scale.set(0.2, 0.2, 0.2);
+        spr.userData.life = 0.7;
+        spr.renderOrder = 1003;
+        this.scene.add(spr);
+        if (this.currentAnimation) this.currentAnimation.ripples.push(spr);
+      },
+
+      updateRipples(delta) {
+        const anim = this.currentAnimation;
+        if (!anim || !anim.ripples) return;
+        for (let i = anim.ripples.length - 1; i >= 0; i--) {
+          const r = anim.ripples[i];
+          r.userData.life -= delta;
+          r.material.opacity = Math.max(0, r.userData.life);
+          r.scale.multiplyScalar(1 + delta * 2.2);
+          if (r.userData.life <= 0) {
+            this.scene.remove(r);
+            if (r.material && r.material.map) r.material.map.dispose();
+            if (r.material) r.material.dispose();
+            anim.ripples.splice(i, 1);
+          }
+        }
+      },
+
+      arrivalPulse(marker) {
+        const sphere = marker.children[1];
+        const baseScale = sphere.scale.clone();
+        const dur = 0.25; // seconds
+        const maxBoost = 0.6; // peak scale delta
+        const easeOutCubic = (x) => 1 - Math.pow(1 - x, 3);
+        const easeInCubic = (x) => x * x * x;
+
+        let start = null;
+        const step = (ts) => {
+          if (!this.currentAnimation) return; // if animation ended, stop
+          if (start === null) start = ts - 16; // backdate ~1 frame so expansion starts immediately
+          const n = Math.min((ts - start) / (dur * 1000), 1); // 0..1
+
+          // Two-phase pulse: fast grow (no initial pause), then quick settle
+          let s;
+          if (n < 0.5) {
+            const m = n / 0.5; // 0..1
+            s = 1 + maxBoost * easeOutCubic(m);
+          } else {
+            const m = (n - 0.5) / 0.5; // 0..1
+            s = 1 + maxBoost * (1 - easeInCubic(m));
+          }
+
+          sphere.scale.set(baseScale.x * s, baseScale.y * s, baseScale.z * s);
+          this.render();
+
+          if (n < 1) requestAnimationFrame(step); else sphere.scale.copy(baseScale);
+        };
+        requestAnimationFrame(step);
+      },
+
+      // Spherical interpolation between two unit direction vectors
+      slerpDirections(fromDir, toDir, t) {
+        const vFrom = fromDir.clone().normalize();
+        const vTo = toDir.clone().normalize();
+        const q = new THREE.Quaternion().setFromUnitVectors(vFrom, vTo);
+        const qi = new THREE.Quaternion();
+        qi.slerpQuaternions(new THREE.Quaternion(), q, t);
+        return vFrom.applyQuaternion(qi).normalize();
+      },
+
+      showNotification(message, type) {
+        const n = document.getElementById('notification');
+        n.textContent = message; n.className = type; n.style.display = 'block';
+        clearTimeout(n._timer);
+        n._timer = setTimeout(() => { n.style.display = 'none'; }, 2500);
+      },
+
+      easeInOutQuad(t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; },
+
+      onWindowResize() {
+        const w = window.innerWidth, h = window.innerHeight;
+        const aspect = w / h;
+
+        // Measure controls height to know how much vertical space they occupy
+        const controlsEl = document.getElementById('controls');
+        const controlsH = controlsEl ? controlsEl.getBoundingClientRect().height : 0;
+        const controlsFrac = Math.min(0.6, controlsH / Math.max(1, h)); // cap at 60%
+
+        // In portrait, move the globe UP by looking slightly BELOW the equator (negative offset)
+        if (aspect < 1.0) {
+          // Stronger lift that scales with the UI footprint
+          this.yOffset = -(0.42 + controlsFrac * 1.1); // e.g., if controls ~30% -> ~-0.75
+        } else {
+          this.yOffset = 0;
+        }
+
+        if (this.renderer) this.renderer.setSize(w, h);
+        if (this.camera) this.camera.aspect = aspect;
+        const cameraDist = this.getResponsiveCameraDistance();
+        const lookAtTarget = new THREE.Vector3(0, this.yOffset, 0);
+
+        // If idle (no animation), immediately reposition
+        if (this.camera && !this.currentAnimation) {
+          this.camera.position.set(0, this.yOffset, cameraDist);
+          if (this.controls && this.controls.target) this.controls.target.copy(lookAtTarget);
+        }
+        if (this.camera) this.camera.updateProjectionMatrix();
+
+        if (this.controls && this.controls.target && this.camera) {
+          const dist = this.camera.position.distanceTo(this.controls.target);
+          this.controls.minDistance = dist * 0.8;
+          this.controls.maxDistance = dist * 1.5;
+        }
+
+        this.render();
+      }
+    };
+
+    // --- Entry ---
+    document.addEventListener('DOMContentLoaded', () => {
+      GlobeApp.init();
+
+      const sendBtn = document.getElementById('send-message');
+      sendBtn.addEventListener('click', () => {
+        const sender = document.getElementById('sender-city').value;
+        const receiver = document.getElementById('receiver-city').value;
+        GlobeApp.sendMessage(sender, receiver);
+      });
+
+      // Prevent Enter from triggering during animation
+      ['sender-city', 'receiver-city', 'message'].forEach(id => {
+        const el = document.getElementById(id);
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            if (GlobeApp.currentAnimation) {
+              e.preventDefault();
+              GlobeApp.showNotification('Please wait — animation in progress.', 'info');
+            } else {
+              document.getElementById('send-message').click();
+            }
+          }
+        });
+      });
+
+      
+    });
+  </script>
+</body>
+</html>
