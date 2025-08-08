@@ -497,7 +497,7 @@
         const pos = this.kaabahBasePos.clone().add(this.kaabahNormal.clone().multiplyScalar(bob));
         this.kaabah.position.copy(pos);
         // subtle spin around normal
-        this.kaabah.rotateOnAxis(this.kaabahNormal, delta * 0.4);
+        this.kaabah.rotateY(delta * 0.4);
       },
 
       syncKaabahForReceiverName(name) {
